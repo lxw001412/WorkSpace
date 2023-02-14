@@ -1,0 +1,222 @@
+#include <stdio.h>
+#include <stdlib.h>
+extern "C"
+{
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
+}
+
+
+int main(int argc, char *argv[])
+{
+	const char* in_file = NULL;
+	const char* out_file = NULL;
+	av_log_set_level(AV_LOG_INFO);
+	//if (argc < 3) {
+	//	av_log(NULL, AV_LOG_ERROR, "缺少输入文件和输出文件参数");
+	//	return -1;
+	//}
+	in_file = "test.h264";
+	out_file = "out.yuv";
+
+	AVFormatContext *fmt_ctx = NULL;
+	AVCodecContext *cod_ctx = NULL;
+	AVCodec *cod = NULL;
+	struct SwsContext *img_convert_ctx = NULL;
+	int ret = 0;
+	AVPacket packet;
+
+	//第一步创建输入文件AVFormatContext
+	fmt_ctx = avformat_alloc_context();
+	if (fmt_ctx == NULL)
+	{
+		ret = -1;
+		av_log(NULL, AV_LOG_ERROR, "alloc fail");
+		//goto __ERROR;
+	}
+	if (avformat_open_input(&fmt_ctx, in_file, NULL, NULL) != 0)
+	{
+		ret = -1;
+		av_log(NULL, AV_LOG_ERROR, "open fail");
+		//goto __ERROR;
+	}
+
+	//第二步 查找文件相关流，并初始化AVFormatContext中的流信息
+	if (avformat_find_stream_info(fmt_ctx, NULL) < 0)
+	{
+		ret = -1;
+		av_log(NULL, AV_LOG_ERROR, "find stream fail");
+		//goto __ERROR;
+	}
+
+	av_dump_format(fmt_ctx, 0, in_file, 0);
+
+	//第三步查找视频流索引和解码器
+	int stream_index = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &cod, -1);
+
+	//第四步设置解码器上下文并打开解码器
+	AVCodecParameters *codecpar = fmt_ctx->streams[stream_index]->codecpar;
+	if (!cod)
+	{
+		ret = -1;
+		av_log(NULL, AV_LOG_ERROR, "find codec fail");
+		//goto __ERROR;
+	}
+	cod_ctx = avcodec_alloc_context3(cod);
+	avcodec_parameters_to_context(cod_ctx, codecpar);
+	ret = avcodec_open2(cod_ctx, cod, NULL);
+	if (ret < 0)
+	{
+		av_log(NULL, AV_LOG_ERROR, "can't open codec");
+		//goto __ERROR;
+	}
+
+	//第五步打开输出文件
+	FILE *out_fb = NULL;
+	out_fb = fopen(out_file, "wb");
+	if (!out_fb)
+	{
+		av_log(NULL, AV_LOG_ERROR, "can't open file");
+		//goto __ERROR;
+	}
+
+	//创建packet,用于存储解码前的数据
+	av_init_packet(&packet);
+
+
+	//第六步创建Frame，用于存储解码后的数据
+	AVFrame *frame = av_frame_alloc();
+	frame->width = codecpar->width;
+	frame->height = codecpar->height;
+	frame->format = codecpar->format;
+	av_frame_get_buffer(frame, 32);
+
+	AVFrame *yuv_frame = av_frame_alloc();
+	yuv_frame->width = codecpar->width;
+	yuv_frame->height = codecpar->height;
+	yuv_frame->format = AV_PIX_FMT_YUV420P;
+	av_frame_get_buffer(yuv_frame, 32);
+
+	// size_t writesize = av_image_get_buffer_size(frame->format, frame->width,frame->height, 32);
+	//第七步重采样初始化与设置参数
+	// uint8_t **data = (uint8_t **)av_calloc((size_t)out_channels, sizeof(*data))
+
+	img_convert_ctx = sws_getContext(codecpar->width,
+		codecpar->height,
+		(AVPixelFormat)codecpar->format,
+		codecpar->width,
+		codecpar->height,
+		AV_PIX_FMT_YUV420P,
+		SWS_BICUBIC,
+		NULL, NULL, NULL);
+
+	//while循环，每次读取一帧，并转码
+	//第八步 读取数据并解码,重采样进行保存
+	int count = 0;
+	while (av_read_frame(fmt_ctx, &packet) >= 0)
+	{
+		if (packet.stream_index != stream_index)
+		{
+			av_packet_unref(&packet);
+			continue;
+		}
+
+
+		ret = avcodec_send_packet(cod_ctx, &packet);
+		if (ret < 0)
+		{
+			ret = -1;
+			av_log(NULL, AV_LOG_ERROR, "decode error");
+			goto __ERROR;
+		}
+
+		while (avcodec_receive_frame(cod_ctx, frame) >= 0)
+		{
+			av_log(NULL, AV_LOG_INFO, "decode frame count = %d\n", count++);
+			sws_scale(img_convert_ctx,
+				(const uint8_t **)frame->data,
+				frame->linesize,
+				0,
+				codecpar->height,
+				yuv_frame->data,
+				yuv_frame->linesize);
+			int y_size = cod_ctx->width * cod_ctx->height;
+			fwrite(yuv_frame->data[0], 1, y_size, out_fb);
+			fwrite(yuv_frame->data[1], 1, y_size / 4, out_fb);
+			fwrite(yuv_frame->data[2], 1, y_size / 4, out_fb);
+		}
+
+		av_packet_unref(&packet);
+	}
+
+	while (1)
+	{
+		av_log(NULL, AV_LOG_INFO, "flush decode \n");
+		ret = avcodec_send_packet(cod_ctx, NULL);
+		if (ret < 0)
+		{
+			ret = -1;
+			av_log(NULL, AV_LOG_ERROR, "flush decode error\n");
+			goto __ERROR;
+		}
+
+		while (avcodec_receive_frame(cod_ctx, frame) >= 0)
+		{
+			av_log(NULL, AV_LOG_INFO, "flush decode frame count = %d", count++);
+			sws_scale(img_convert_ctx,
+				(const uint8_t **)frame->data,
+				frame->linesize,
+				0,
+				codecpar->height,
+				yuv_frame->data,
+				yuv_frame->linesize);
+			int y_size = cod_ctx->width * cod_ctx->height;
+			fwrite(yuv_frame->data[0], 1, y_size, out_fb);
+			fwrite(yuv_frame->data[1], 1, y_size / 4, out_fb);
+			fwrite(yuv_frame->data[2], 1, y_size / 4, out_fb);
+		}
+
+	}
+
+
+
+__ERROR:
+	if (fmt_ctx)
+	{
+		avformat_close_input(&fmt_ctx);
+		avformat_free_context(fmt_ctx);
+	}
+
+	if (cod_ctx)
+	{
+		avcodec_close(cod_ctx);
+		avcodec_free_context(&cod_ctx);
+	}
+
+	if (out_fb)
+	{
+		fclose(out_fb);
+	}
+
+	if (frame)
+	{
+		av_frame_free(&frame);
+	}
+
+	if (yuv_frame)
+	{
+		av_frame_free(&yuv_frame);
+	}
+
+	if (img_convert_ctx)
+	{
+		sws_freeContext(img_convert_ctx);
+	}
+
+
+	return ret;
+}
+
+
