@@ -1,0 +1,5 @@
+﻿  main.cpp
+d:\workspace\tool\tftp\tftp\tftp_svr.h(113): warning C4244: “=”: 从“SOCKET”转换到“int”，可能丢失数据
+d:\workspace\tool\tftp\tftp\tftp_svr.h(243): warning C4267: “参数”: 从“size_t”转换到“int”，可能丢失数据
+d:\workspace\tool\tftp\tftp\tftp_svr.h(318): warning C4267: “初始化”: 从“size_t”转换到“int”，可能丢失数据
+  Tftp.vcxproj -> D:\workspace\Tool\Tftp\x64\Debug\Tftp.exe
